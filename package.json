@@ -3,6 +3,9 @@
 	"version": "0.0.1",
 	"dependencies": {
 		"connect": "",
-		""
-	}
+		"ejs":     "",
+		"walker":  ""
+		//,"vm":    ""
+	},
+	"bin": "weirdo.js"
 }
