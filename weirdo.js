@@ -7,7 +7,15 @@ var connect = require('connect'),
        path = require('path'),
        vm   = require('vm'),
        ejs  = require('ejs'),
-       Walker = require("walker");
+       Walker = require("walker"),
+       NodeCache = require("node-cache"),
+       async;
+
+var file_cache = new NodeCache();
+
+fs.watch(".", function(event, filename){
+	file_cache.flush();
+});
 
 function InvalidPathError(message) {  
     this.message = message;  
@@ -200,10 +208,168 @@ function candidateSorter (a, b) {
 	}
 }
 
-function handler(request, response, next) {
-	var url = require('url').parse(request.url, true);
+function directory_matcher(current_path, parts, ids, explanation, cb) {
+    var part = parts.pop();
 
-	var url_split = url.split("/");
+	var new_path = path.join(current_path, part);
+
+	fs.lstat(new_path, function (err, stats) {
+		if (err !== null) {
+			throw err;
+		}
+
+		// if it's a directory continue
+		if (stats.isDirectory()) {
+			directory_matcher(new_path, parts, ids, explanation, cb);
+		} else {
+			cb(parts, current_path, ids, explanation);
+		}
+	});
+}
+
+function generate_cache_key (path_parts, request) {
+	var method = request.method;
+	var content_type = request.headers['content_type'];
+	var option_content_type = option_content_types[content_type];
+
+	return path_parts.join("_") + "_" + method + "_" + content_type;
+}
+
+function handler(request, response, next) {
+	async.waterfall([
+		// start
+		function (cb) {
+			var url = require('url').parse(request.url, true);
+
+			var url_split = url.split("/");
+
+			// First item is blank.
+			url_split.pop();
+
+			var ids = [];
+
+			var explanation = [];
+
+			var path_parts = [];
+
+			// strip anything that looks like an id from the path
+			url_split.forEach (function (part){
+				var matching_regex = matchIdRegex(part);
+				if (matching_index !== null) {
+					explanation.append("<id> " + matching_regex.toString() + " " + part);
+					ids.append(part);
+				} else {
+					path_parts.append(part);
+				}
+			});
+
+			cb(path_parts);
+		},
+		// find directory from path
+		function (path_parts, ids, explanation, cb) {
+			// check cache
+			var cache_key = generate_cache_key(path_parts, request);
+
+			cache.get( cache_key, function( err, value ){
+				if( !err ){
+					if (_.isEmpty(value)) {
+						directory_matcher("", path_parts, ids, explanation, cb)
+					} else {
+
+					}
+				}
+			});
+		},
+
+		// find files
+		function (cache_file, parts, directory, ids, explanation, cb) {
+			if ( cache_file ) {
+				cb()
+			}
+
+			// should only be 1 or 0 parts left
+			if (parts.length > 1) {
+				throw "Requested url does not match path";
+			}
+
+			var part = parts.length === 0 ? "index" : parts[0]
+
+			var file_name_regex = new RegExp("^" + part + "[.](\w+[.])*(\w+)$");
+
+			fs.readdir(parts, function (err, files) {
+				if (err !== null) {
+					throw err;
+				}
+
+				var candidates = [];
+
+				files.forEach(function (file_name) {
+					var file_match = file_name.match(regex);
+					if (file_match !== null) {
+						candidates.append({
+									file_path: file_name,
+									name: name,
+									options: file_match[1].split(".").slice(0,-1),
+									extension: file_match[2]
+								});
+					}
+				}
+
+				// find best candidate.
+				cb()
+			});
+		},
+
+		// files to run before running main file
+		// config.js - load database config etc
+		function () {
+			// check cache
+
+		}
+
+		// before.js - use for parsing content and any other stuff
+		function () {
+			// check cache
+
+		}
+
+		// session.js - generate
+		function () {
+			// check cache
+
+		}
+
+		// authentication.js
+		function () {
+			// check cache
+
+		}
+
+		// authorization.js
+		function () {
+			// check cache
+
+		}
+
+		// run main file
+
+		// if file didn't render anything search for a rendering file
+
+		// layout files
+		// layout.ejs
+
+		// header.ejs
+
+		// nav.ejs
+
+		// footer.ejs
+
+		// post processing
+		// after.js
+	],
+	function (err, result) {
+
+	});
 
 	// handle files - have to locate the file before we can handle any of the 
 	// other options like before and config.

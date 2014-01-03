@@ -4,8 +4,9 @@
 	"dependencies": {
 		"connect": "",
 		"ejs":     "",
-		"walker":  ""
-		//,"vm":    ""
+		"walker":  "",
+		"node-cache": "",
+		"async":    ""
 	},
 	"bin": "weirdo.js"
 }
