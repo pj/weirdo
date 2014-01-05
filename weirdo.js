@@ -52,69 +52,6 @@ function checkFiles(candidates, regex, file_name) {
 	}
 }
 
-function urlMatcher(url, cb) {
-	var url_parts = url.split("/");
-
-	// first is blank
-	var url_parts.pop();
-
-	var current_path = "";
-
-	var ids = [];
-	var explanation = [];
-	var candidates = [];
-
-	function matcher() {
-		if (url_parts.length == 0) {
-			cb(candidates, ids, explanation);
-			return;
-		}
-
-		var part = url_parts.pop();
-
-		// Check if part is an id
-		var matching_regex = matchIdRegex(part);
-
-		if (matching_index !== null) {
-			explanation.append("<id> " + matching_regex.toString() + " " + part);
-			ids.append(part);
-			matcher();
-			return;
-		}
-
-		fs.lstat(path.join(current_path, part), function (err, stats) {
-			// not found - try and find files
-			if (err !== null) {
-				var file_name_regex = new RegExp("^" + part + "[.](\w+[.])*(\w+)$");
-
-				fs.readdir(path_parts, function (err, files) {
-					checkFiles(candidates, file_name_regex, files);
-					
-					matcher();
-				});
-			// Make sure it's a directory
-			} else if (stats.isDirectory()) {
-				// is the last part an index file?
-				if (url_parts.length === 0 || (url_parts.length === 1 && url_parts[0] === "")){
-					var file_name_regex = new RegExp("^index[.](\w+[.])*(\w+)$");
-
-					fs.readdir(path_parts, function (err, files) {
-						checkFiles(candidates, file_name_regex, files);
-						
-						matcher();
-					}); 
-				} else {
-					matcher();
-				}
-			} else {
-				cb(explanation, null, null, null);
-			}
-		});
-    }
-
-    return matcher;
-}
-
 // known content types to options
 var option_content_types = {
 	"application/json": 'json',
@@ -124,54 +61,43 @@ var option_content_types = {
 var extension_order = ["js", "ejs"];
 
 var extension_handlers = {
-	"js": function (candidate, data, handlerCB) {
-		fs.readFile(candidate.file_path, function (err, file) {
-			if (err !== null) {
-				handlerCB(err, null, null);
-				return;
+	"js": function (candidate, data, cb) {
+		var results = {};
+
+		var render = null;
+
+		function results_func(result) {
+			results = result;
+		}
+
+		function render_func(render) {
+			if (render !== null) {
+				// double render error
+				throw "Double render error";
+
 			}
-			
-			var results = {};
+			return render;
+		}
 
-			var render = null;
-
-			function results_func(result) {
-				results = result;
+		function render_file_func(render) {
+			if (render === null) {
+				throw "Double render error";
 			}
+			return render;
+		}
 
-			function render_func(render) {
-				if (render !== null) {
-					// double render error
-				}
-				return render;
-			}
-
-			function render_file_func(render) {
-				if (render === null) {
-					// double render error
-				}
-				return render;
-			}
-
-			// create file context
-			var context = vm.createContext({
-				params: request.query,
-				request: request,
-				results: results_func,
-				render: render_func,
-				render_file: render_file_func
-			});
-
-			// run script
-			try {
-				vm.runInContext(file, context);
-			} catch (e) {
-				handlerCB(e, null, null)
-			}
-
-			// work out results
-
+		// add functions to context.
+		var context = vm.createContext({
+			params: request.query,
+			request: request,
+			results: results_func,
+			render: render_func,
+			render_file: render_file_func
 		});
+
+		vm.runInContext(file, context);
+
+		cb();
 	},
 
 	"ejs": function (candidate, data, handlerCB) {
@@ -196,10 +122,10 @@ function candidateSorter (a, b) {
 	var b_score = b.options.indexOf(option_content_type) > 0 ? 1 : -1;
 
 	a_score += a.options.indexOf(method) > 0 ? 1 : -1;
-	b_score = b.options.indexOf(method) > 0 ? 1 : -1;
+	b_score += b.options.indexOf(method) > 0 ? 1 : -1;
 
-	a_score = -extension_order.indexOf(a.extension);
-	b_score = -extension_order.indexOf(b.extension);
+	a_score += -extension_order.indexOf(a.extension);
+	b_score += -extension_order.indexOf(b.extension);
 
 	if (a_score == b_score) {
 		throw new InvalidPathError("Unable to select file");
@@ -233,6 +159,44 @@ function generate_cache_key (path_parts, request) {
 	var option_content_type = option_content_types[content_type];
 
 	return path_parts.join("_") + "_" + method + "_" + content_type;
+}
+
+function check_config_cache (config_file, file) {
+	return cache.get(config_file + "_" + file.directory);
+}
+
+function find_config_file(config_name, directory, parts, file, ids, explanation, context, cb) {
+	if (parts.length == 0) {
+		cb(null);
+		return;
+	}
+
+	var check_path = parts.join(path.sep) + path.sep + config_name;
+
+	fs.readFile(check_path, 'r', function (err, data) {
+		if (err) {	
+			find_config_file(config_name, directory, parts.slice(0,-1), cb);
+		} else {
+			// parse file
+			var script = vm.createScript(data, check_path);
+
+			// add to cache. - keyed by directory from url so possibly multiple copies of it.
+			var cache_key = config_name + "_" + directory;
+
+			var file = {
+				name: config_name,
+				path: check_path,
+				data: data,
+				script: script
+			}
+
+			cache.set(cache_key, file)
+
+			vm.runInContext(script, context);
+
+			cb(file, ids, explanation, context, cb);
+		}
+	});
 }
 
 function handler(request, response, next) {
@@ -270,12 +234,12 @@ function handler(request, response, next) {
 			// check cache
 			var cache_key = generate_cache_key(path_parts, request);
 
-			cache.get( cache_key, function( err, value ){
+			cache.get( cache_key, function( err, cache_file ){
 				if( !err ){
-					if (_.isEmpty(value)) {
+					if (_.isEmpty(cache_file)) {
 						directory_matcher("", path_parts, ids, explanation, cb)
 					} else {
-
+						cb(cache_file, path_parts, ids, explanation)
 					}
 				}
 			});
@@ -284,7 +248,8 @@ function handler(request, response, next) {
 		// find files
 		function (cache_file, parts, directory, ids, explanation, cb) {
 			if ( cache_file ) {
-				cb()
+				cb(cache_file, ids, explanation);
+				return;
 			}
 
 			// should only be 1 or 0 parts left
@@ -297,7 +262,7 @@ function handler(request, response, next) {
 			var file_name_regex = new RegExp("^" + part + "[.](\w+[.])*(\w+)$");
 
 			fs.readdir(parts, function (err, files) {
-				if (err !== null) {
+				if (err) {
 					throw err;
 				}
 
@@ -306,56 +271,102 @@ function handler(request, response, next) {
 				files.forEach(function (file_name) {
 					var file_match = file_name.match(regex);
 					if (file_match !== null) {
-						candidates.append({
+						var file = {
 									file_path: file_name,
 									name: name,
 									options: file_match[1].split(".").slice(0,-1),
-									extension: file_match[2]
-								});
+									extension: file_match[2],
+									directory: directory
+								};
+
+						candidates.append(file);
 					}
 				}
 
 				// find best candidate.
-				cb()
+				candidates.sort(candidateSorter);
+
+				var candidate = candidates[0];
+
+				// load file contents
+				fs.readFile(directory + path.sep + file_name, function (err, data) {
+					if (err) throw err;
+
+					candidate.file_data = data;
+
+					// add file to cache
+					var cache_key = generate_cache_key(parts, request);
+
+					cache.set(cache_key, candidates[0]);
+
+					cb(candidate, ids, explanation, {})
+				});
 			});
 		},
 
-		// files to run before running main file
+		// files to run before running main file - data is a holder that will get passed to the file 
+		// as context
 		// config.js - load database config etc
-		function () {
+		function (file, ids, explanation, context, cb) {
 			// check cache
+			var config_file = check_config_cache("config", file);
 
+			if (config_file !== null) {
+				vm.runInContext(file, context);
+
+				// check if we have rendered or redirected?
+
+
+				cb(file, ids, explanation, context);
+			} else {
+				var directory = file.directory;
+
+				var parts = directory.split(path.sep);
+
+				// work up directory to find relevant file
+				find_config_file("config.js", parts, file, ids, explanation, context, cb);
+			}
 		}
 
 		// before.js - use for parsing content and any other stuff
-		function () {
-			// check cache
-
+		function (file, ids, explanation, context, cb) {
+			cb(file, ids, explanation, context);
 		}
 
 		// session.js - generate
-		function () {
-			// check cache
-
+		function (file, ids, explanation, context, cb) {
+			cb(file, ids, explanation, context);
 		}
 
 		// authentication.js
-		function () {
-			// check cache
-
+		function (file, ids, explanation, context, cb) {
+			cb(file, ids, explanation, context);
 		}
 
 		// authorization.js
-		function () {
-			// check cache
-
+		function (file, ids, explanation, context, cb) {
+			cb(file, ids, explanation, context);
 		}
 
 		// run main file
+		function (file, ids, explanation, context, cb) {
+			// find handler for file
+			var handler = extension_handlers[file.extension];
 
-		// if file didn't render anything search for a rendering file
+			// run file
+			handler(file, context);
 
-		// layout files
+			// set results
+			if (context.result) {
+
+			} else {
+
+			}
+		}
+
+		// if file didn't render anything search for a rendering file.
+
+		// render layout files
 		// layout.ejs
 
 		// header.ejs
@@ -364,61 +375,14 @@ function handler(request, response, next) {
 
 		// footer.ejs
 
+		// put it all together
+
 		// post processing
 		// after.js
 	],
 	function (err, result) {
-
+		next();
 	});
-
-	// handle files - have to locate the file before we can handle any of the 
-	// other options like before and config.
-	function urlMatcherCB(err, candidates, ids, explanation) {
-		var method = request.method;
-		var content_type = request.headers['content_type'];
-		var option_content_type = option_content_types[content_type];
-
-		var sorted_candidates = candidate_files.sort(candidateSorter);
-
-		var candidate = sorted_candidates[0];
-
-		// Run pre files
-		// config.js - load database config etc
-
-		// before.js - use for parsing content and any other stuff
-
-		// session.js - generate
-
-		// authentication.js
-
-		// authorization.js
-
-		// find handler for candidate
-		var handler = extension_handlers[candidate.extension];
-
-		function handlerCB(err, data, render) {
-			// handle errors
-			if (err !== null ){
-
-			}
-
-			// layout.ejs
-
-			// header.ejs
-
-			// nav.ejs
-
-			// footer.ejs
-
-			// after.js
-
-			next();
-		}
-
-		handler(candidate, handlerCB);
-	}
-
-	urlMatcher(url, urlMatcherCB, urlMatcherError);
 }
 
 var app = connect()
