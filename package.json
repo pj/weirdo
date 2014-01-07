@@ -8,5 +8,12 @@
 		"node-cache": "",
 		"async":    ""
 	},
-	"bin": "weirdo.js"
+	"devDependencies": {
+		"mocha": "",
+		"should": ""
+	},
+	"bin": "bin/weirdo.js",
+	"scripts": {
+		"test": "./node_modules/mocha/bin/mocha spec"
+	}
 }
