@@ -20,14 +20,6 @@ fs.watch(".", function(event, filename){
 	file_cache.flush();
 });
 
-// known content types to options
-var option_content_types = {
-	"application/json": 'json',
-	"text/html": 'html'
-}
-
-var extension_order = ["js", "ejs"];
-
 function handler(request, response, next) {
 	async.waterfall([
 		// start
@@ -39,7 +31,7 @@ function handler(request, response, next) {
 		url_processing.find_directory,
 
 		// find files
-		url_processing.find_file,
+		url_processing.find_script_file,
 
 		// files to run before running main file - data is a holder that will get passed to the file 
 		// as context
